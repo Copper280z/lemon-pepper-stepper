@@ -329,7 +329,9 @@ void StepperMotor::loopFOC() {
 // - needs to be called iteratively it is asynchronous function
 // - if target is not set it uses motor.target value
 void StepperMotor::move(float new_target) {
-
+  uint32_t time = _micros();
+  Ts = (float) (time - time_prev) * 1e-6;
+  time_prev = time;
   // downsampling (optional)
   if(motion_cnt++ < motion_downsample) return;
   motion_cnt = 0;
@@ -356,25 +358,29 @@ void StepperMotor::move(float new_target) {
   // estimate the motor current if phase reistance available and current_sense not available
   if(!current_sense && _isset(phase_resistance)) current.q = (voltage.q - voltage_bemf)/phase_resistance;
 
+
   // choose control loop
   switch (controller) {
     case MotionControlType::torque:
-      if(!_isset(phase_resistance))  feedforward_voltage.q = target; // if voltage torque control
+      current_sp = target;
+      if(!_isset(phase_resistance))  feedforward_voltage.q = current_sp; // if voltage torque control
       else  feedforward_voltage.q =  target*phase_resistance + voltage_bemf;
       feedforward_voltage.q = _constrain(feedforward_voltage.q, -voltage_limit, voltage_limit);
       // set d-component (lag compensation if known inductance)
       if(!_isset(phase_inductance)) feedforward_voltage.d = 0;
       else feedforward_voltage.d = _constrain( -target*shaft_velocity*pole_pairs*phase_inductance, -voltage_limit, voltage_limit);
-      current_sp = target;
       break;
     case MotionControlType::angle:
       // angle set point
       shaft_angle_sp = target;
+      angle_error = shaft_angle_sp - shaft_angle;
       // calculate velocity set point
-      shaft_velocity_sp = feed_forward_velocity + P_angle( shaft_angle_sp - shaft_angle );
-      shaft_angle_sp = _constrain(shaft_angle_sp, -velocity_limit, velocity_limit);
+      shaft_velocity_sp = feed_forward_velocity + P_angle( angle_error);
+
+      shaft_velocity_sp = _constrain(shaft_velocity_sp, -velocity_limit, velocity_limit);
+      velocity_error = shaft_velocity_sp - shaft_velocity;
       // calculate the torque command
-      current_sp = PID_velocity(shaft_velocity_sp - shaft_velocity); // if voltage torque control
+      current_sp = velocity_out_lpf(PID_velocity(velocity_error)+afc_ff); // if voltage torque control
       // if torque controlled through voltage
       // use voltage if phase-resistance not provided
       if(!_isset(phase_resistance))  feedforward_voltage.q = current_sp;
@@ -386,8 +392,9 @@ void StepperMotor::move(float new_target) {
     case MotionControlType::velocity:
       // velocity set point
       shaft_velocity_sp = target;
+      velocity_error = shaft_velocity_sp - shaft_velocity;
       // calculate the torque command
-      current_sp = PID_velocity(shaft_velocity_sp - shaft_velocity); // if current/foc_current torque control
+      current_sp = velocity_out_lpf(PID_velocity(velocity_error)+afc_ff); // if voltage torque control
       // if torque controlled through voltage control
       // use voltage if phase-resistance not provided
       if(!_isset(phase_resistance))  feedforward_voltage.q = current_sp;

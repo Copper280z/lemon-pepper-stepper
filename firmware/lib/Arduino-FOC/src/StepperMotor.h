@@ -10,16 +10,25 @@
 #include "common/base_classes/FOCMotor.h"
 #include "common/base_classes/StepperDriver.h"
 #include "common/base_classes/Sensor.h"
+#include "common/lowpass_filter.h"
 #include "common/foc_utils.h"
 #include "common/time_utils.h"
 #include "common/defaults.h"
-
+#include "../../SimpleFOC_tools/src/sfoc_tools.h"
 /**
  Stepper Motor class
 */
 class StepperMotor: public FOCMotor
 {
   public:
+    LowPassFilter velocity_out_lpf = LowPassFilter(1.0f/175.0f);
+
+    float velocity_prev;
+    float angle_error = 0;
+    uint32_t time_prev;
+    float Ts;
+    float velocity_error=0;
+    float afc_ff =0;
     /**
       StepperMotor class constructor
       @param pp  pole pair number 
