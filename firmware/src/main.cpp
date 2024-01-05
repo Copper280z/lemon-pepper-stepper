@@ -170,6 +170,8 @@ void setup()
 	commander.add('X', &testExecute);
 	commander.add('E', &calibrateEncoder);
 
+	SERIALPORT.println("BMP Over TCP!!!");
+
 
 }
 
