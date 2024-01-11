@@ -68,28 +68,16 @@ STM32HWEncoder enc = STM32HWEncoder(ENC_PPR, ENC_A, ENC_B, ENC_Z);
  */
 // InlineCurrentSenseSync currentsense = InlineCurrentSenseSync(90, ISENSE_U, ISENSE_V, ISENSE_W);
 
-// StepperDriver4PWM driver = StepperDriver4PWM(MOT_A1, MOT_A2, MOT_B1, MOT_B2);
 StepperDriver4PWM driver = StepperDriver4PWM(PA0, PA9, PA1, PA10, PB12);
-// StepperDriver4PWM driver = StepperDriver4PWM(MOT_A1, MOT_A2, MOT_B1, MOT_B2);
 StepperMotor motor = StepperMotor(POLEPAIRS, RPHASE, MOTORKV, 0.0035);
 StepDirListener step_dir = StepDirListener( PC11, PA8, _2PI/(200.0*16) );
 void onStep() { step_dir.handle(); }
 
-// StepperMotor motor = StepperMotor(POLEPAIRS, RPHASE);
-
-// MotorPositionModel model(1.625e-5, 2.06e-4, 1.65e-2, 4.346, 5.24e-3);
-// StateSpaceController<3, 1, 1, false> observer(model);
-
-Observer observer = Observer(1.625e-5, 2.06e-4, 1.65e-2, 4.346, 5.24e-3);
-
-// Matrix<1> y = {0};
-// Matrix<1> u = {0};
 int time_prev;
 
-// Observer observer = Observer(9e-6, 3.5e-6, 0.11, RPHASE, 0.0045);
 
-SineSweep test = SineSweep();
-
+SineSweep sine_test = SineSweep();
+PRBS prbs_test = PRBS();
 
 Commander commander = Commander(SERIALPORT);
 
@@ -107,13 +95,17 @@ uint8_t configureCAN(void);
 void calibrateEncoder(char *c);
 void userButton(void);
 
-void testExecute(char* c) {
-	test.Execute();
+void sineExecute(char* c) {
+	sine_test.Execute();
+}
+
+void prbsExecute(char* c) {
+	prbs_test.Execute();
 }
 
 void setup()
 {
-	test.amplitude = 0.1;
+	sine_test.amplitude = 0.1;
 	pinMode(LED_GOOD, OUTPUT);
 	pinMode(LED_FAULT, OUTPUT);
 	pinMode(CAL_EN, OUTPUT);
@@ -123,7 +115,7 @@ void setup()
 
 	// attachInterrupt(USER_BUTTON, userButton, RISING);
 
-	SERIALPORT.begin(115200);
+	SERIALPORT.begin(2000000);
 
 	EEPROM.get(0, boardData);
 
@@ -152,22 +144,24 @@ void setup()
 		digitalWrite(LED_FAULT, HIGH);
 		SIMPLEFOC_DEBUG("Encoder ABZ resolution unexpected.");
 	}
-	// observer.initialise();
-	observer.L = {1, 0.0, 0.0};
-	// observer.K = {99.26, 1.37, 1.539};
+
 
 	time_prev=micros();
 
-	test.linkMotor(&motor);
-	test.linkSerial(&SERIALPORT);
-
+	sine_test.linkMotor(&motor);
+	sine_test.linkSerial(&SERIALPORT);
+	
+	prbs_test.linkMotor(&motor);
+	prbs_test.linkSerial(&SERIALPORT);
+	
 	// commander.scalar(&test.max_frequency, (char*)'x');
 	// commander.scalar(&test.min_frequency, (char*)'n');
 	// commander.scalar(&test.amplitude, (char*)'a');
 	// commander.scalar(&test.steps, (char*)'s');
 	// commander.scalar(&test.cycles_per_step, (char*)'c');
 
-	commander.add('X', &testExecute);
+	commander.add('X', &sineExecute);
+	commander.add('P', &prbsExecute);
 	commander.add('E', &calibrateEncoder);
 
 	SERIALPORT.println("BMP Over TCP!!!");
@@ -176,53 +170,17 @@ void setup()
 }
 
 
-// float est_angle=0;
-// float dt=0;
-// float disturbance=0;
-
-// float dist_prev = 0;
-// float filt_dist = 0;
-
-// PIDController dist_PID = PIDController(100, 400, 1 , 0, motor.voltage_limit);
-// LowPassFilter dist_filter = LowPassFilter(1.0f/1000.0f);
 void loop()
 {
 
-	// observer.r(0) = motor.target;
-    // disturbance=(motor.shaft_angle- est_angle);
-	// y(0) = disturbance;
-    // u(0)=motor.feedforward_voltage.q;
-	// observer.u=u;
-
-
-	// int t_now = micros();
-	// dt = (t_now-time_prev)*1e-6;
-	// time_prev=t_now;
-
-	// observer.x_hat = observer.estimate_state<false>(y,dt);
-	// observer.update(y,dt);
-
-
-	// est_angle=dist_filter(observer.x_hat(0));
-	
-
-	// filt_dist = dist_prev*0.3 + 0.7*disturbance;
-	// filt_dist = dist_filter(disturbance);
-	// dist_prev = disturbance;
-	
-	// observer.update(motor.feedforward_voltage.q, motor.shaft_angle, dt);
-	// est_angle=dist_filter(observer.getSensorValue());
-	// motor.pid_voltage.q = -dist_PID(disturbance);
 	step_dir.cleanLowVelocity();  
 	motor.move();
 	motor.loopFOC();
 	commander.run();
 
-	// digitalWrite(LED_FAULT, digitalRead(PC11));
 
 	if(counter == 0xFFFF){
 		digitalToggle(LED_GOOD);
-		// Serial.println(adc1Result[0]);
 		counter = 0;
 	}
 counter++;
@@ -276,28 +234,28 @@ uint8_t configureFOC(void)
 
 	// Driver initialization.
 	driver.pwm_frequency = 35000;
-	driver.voltage_power_supply = 12;
-	driver.voltage_limit = driver.voltage_power_supply/2;
+	driver.voltage_power_supply = 12.0f;
+	driver.voltage_limit = driver.voltage_power_supply/2.0f;
 	driver.init();
 
 	// Motor PID parameters.
-    motor.PID_velocity.P = 0.1;
-    motor.PID_velocity.I = 4;
-    motor.PID_velocity.D = 0.00;
-    motor.LPF_velocity.Tf = 0.01;
-	motor.PID_velocity.output_ramp = 0;
-	motor.PID_velocity.limit = 500;
+    motor.PID_velocity.P = 0.075f;
+    motor.PID_velocity.I = 4.0f;
+    motor.PID_velocity.D = 0.00f;
+    motor.LPF_velocity.Tf = 0.0015f;
+	motor.PID_velocity.output_ramp = 0.0f;
+	motor.PID_velocity.limit = 500.0f;
 
-	motor.P_angle.P = 1500;
-    motor.P_angle.I = 5;
-    motor.P_angle.D = 8.0;
-	motor.LPF_angle.Tf = 0.00; // try to avoid
+	motor.P_angle.P = 400.0f;
+    motor.P_angle.I = 5.0f;
+    motor.P_angle.D = 1.0f;
+	motor.LPF_angle.Tf = 0.00f; // try to avoid
 
 	motor.motion_downsample = 20;
 
 	// Motor initialization.
-	motor.voltage_sensor_align = 2;
-	motor.current_limit = 2;
+	motor.voltage_sensor_align = 2.0f;
+	motor.current_limit = 2.0f;
 	motor.velocity_limit = 500;
 	motor.controller = MotionControlType::angle;
 	motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
@@ -329,7 +287,10 @@ uint8_t configureFOC(void)
 
 
 	// calibrateEncoder();
-	motor.target = 2.0;
+	sensor.update();
+	float start_angle = motor.shaftAngle();
+	SERIALPORT.printf("Setting target to: %.2f\n", start_angle);
+	motor.target = start_angle;
 	// if(boardData.signature != magicWord){
 	// 	// If we have not initialized the EEPROM before.
 	// 	motor.init();

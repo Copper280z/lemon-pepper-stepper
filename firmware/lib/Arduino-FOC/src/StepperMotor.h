@@ -21,7 +21,7 @@
 class StepperMotor: public FOCMotor
 {
   public:
-    LowPassFilter velocity_out_lpf = LowPassFilter(1.0f/175.0f);
+    LowPassFilter velocity_out_lpf = LowPassFilter(1.0f/(175.0f*_2PI));
 
     float velocity_prev;
     float angle_error = 0;
