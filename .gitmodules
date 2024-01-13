@@ -1,0 +1,3 @@
+[submodule "firmware/lib/SimpleFOC_tools"]
+	path = firmware/lib/SimpleFOC_tools
+	url = https://github.com/Copper280z/SimpleFOC_tools.git

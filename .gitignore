@@ -5,3 +5,6 @@
 *.lck
 *.pio
 *.vscode
+*.cache
+.ccls
+

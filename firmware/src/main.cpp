@@ -2,10 +2,11 @@
 #include <EEPROM.h>
 #include <SPI.h>
 
-#include <SimpleFOC.h>
+#include "SimpleFOC.h"
 #include "SimpleFOCDrivers.h"
 #include "encoders/mt6835/MagneticSensorMT6835.h"
 #include "encoders/stm32hwencoder/STM32HWEncoder.h"
+#include "utilities/stm32math/STM32G4CORDICTrigFunctions.h"
 
 #include "stm32g4xx_hal_conf.h"
 #include "stm32g4xx_hal_fdcan.h"
@@ -15,6 +16,9 @@
 #include "utils.h"
 #include "InlineCurrentSenseSync.h"
 #include "lemon-pepper.h"
+#include "old.h"
+#include "sfoc_tools.h"
+
 
 #define USBD_MANUFACTURER_STRING "matei repair lab"
 #define USBD_PRODUCT_STRING_FS "lemon-pepper-stepper"
@@ -41,7 +45,7 @@ extern volatile uint8_t RxData[8];
 
 // simpleFOC things
 #define POLEPAIRS 50
-#define RPHASE 3
+#define RPHASE 2.0
 #define MOTORKV 40
 #define ENC_PPR 16383 // max 16383 (zero index) -> *4 for CPR, -1 is done in init to prevent rollover on 16 bit timer
 
@@ -53,8 +57,10 @@ extern volatile uint8_t RxData[8];
  * SPI clockdiv of 16 gives ~10.5MHz clock. May still be stable with lower divisor.
  * The HW encoder is configured using PPR, which is then *4 for CPR (full 12384 gives overflow on 16 bit timer.)
  */
-SPISettings myMT6835SPISettings(168000000 / 16, MT6835_BITORDER, SPI_MODE3);
+SPISettings myMT6835SPISettings(168000000 / 10, MT6835_BITORDER, SPI_MODE3);
 MagneticSensorMT6835 sensor = MagneticSensorMT6835(ENC_CS, myMT6835SPISettings);
+// SPISettings myMT6835SPISettings(168000000 / 10, MT6835_BITORDER, SPI_MODE3);
+// MagneticSensorMT6835 sensor = MagneticSensorMT6835(ENC_CS);
 STM32HWEncoder enc = STM32HWEncoder(ENC_PPR, ENC_A, ENC_B, ENC_Z);
 
 /**
@@ -62,10 +68,18 @@ STM32HWEncoder enc = STM32HWEncoder(ENC_PPR, ENC_A, ENC_B, ENC_Z);
  */
 // InlineCurrentSenseSync currentsense = InlineCurrentSenseSync(90, ISENSE_U, ISENSE_V, ISENSE_W);
 
-StepperDriver4PWM driver = StepperDriver4PWM(MOT_A1, MOT_A2, MOT_B1, MOT_B2);
-// StepperMotor motor = StepperMotor(POLEPAIRS, RPHASE, MOTORKV, 0.0045);
-StepperMotor motor = StepperMotor(POLEPAIRS);
-StepDirListener step_dir = StepDirListener(STEP_PIN, DIR_PIN, _2PI/200.0);
+
+StepperDriver4PWM driver = StepperDriver4PWM(PA0, PA9, PA1, PA10, PB12);
+StepperMotor motor = StepperMotor(POLEPAIRS, RPHASE, MOTORKV, 0.0035);
+StepDirListener step_dir = StepDirListener( PC11, PA8, _2PI/(200.0*16) );
+void onStep() { step_dir.handle(); }
+
+int time_prev;
+
+
+SineSweep sine_test = SineSweep();
+PRBS prbs_test = PRBS();
+
 Commander commander = Commander(SERIALPORT);
 
 uint16_t counter = 0;
@@ -78,22 +92,32 @@ PhaseCurrent_s phase_currents;
 // Prototypes
 uint8_t configureFOC(void);
 uint8_t configureCAN(void);
-uint8_t calibrateEncoder(void);
-
+void calibrateEncoder(char *c);
 void userButton(void);
 void onStep(void) {step_dir.handle();}
 
+void sineExecute(char* c) {
+	sine_test.Execute();
+}
+
+void prbsExecute(char* c) {
+	prbs_test.Execute();
+}
+
 void setup()
 {
+	sine_test.amplitude = 0.1;
 	pinMode(LED_GOOD, OUTPUT);
 	pinMode(LED_FAULT, OUTPUT);
 	pinMode(CAL_EN, OUTPUT);
 	pinMode(MOT_EN, OUTPUT);
-	pinMode(USER_BUTTON, INPUT);
+	// pinMode(USER_BUTTON, INPUT);
+    SimpleFOC_CORDIC_Config();      // initialize the CORDIC
 
-	attachInterrupt(USER_BUTTON, userButton, RISING);
+	// attachInterrupt(USER_BUTTON, userButton, RISING);
 
-	SerialUSB.begin();
+
+	SERIALPORT.begin(2000000);
 
 	EEPROM.get(0, boardData);
 
@@ -107,6 +131,11 @@ void setup()
 	// 	digitalWrite(LED_FAULT, HIGH);
 	// }
 
+
+	step_dir.init();
+	step_dir.enableInterrupt(onStep);
+    step_dir.attach(&motor.target, &motor.feed_forward_velocity);
+
 	ret = configureFOC();
 	if (!ret){
 		SIMPLEFOC_DEBUG("FOC init failed.");
@@ -119,50 +148,41 @@ void setup()
 		SIMPLEFOC_DEBUG("Encoder ABZ resolution unexpected.");
 	}
 
-	// if (!boardData.encoderCalibrated) // If the encoder has not had self-calibration done, try.
-	// {
-	// 	uint8_t calibrationResult = calibrateEncoder();
-	// 	if (calibrationResult == 0x3)
-	// 	{
-	// 		boardData.encoderCalibrated = 1;
-	// 		updateData = 1;
-	// 		SIMPLEFOC_DEBUG("Encoder self calibration successful.");
-	// 	}
-	// 	else
-	// 	{
-	// 		boardData.encoderCalibrated = 0;
-	// 		digitalWrite(LED_FAULT, HIGH);
-	// 		SIMPLEFOC_DEBUG("Encoder self calibration failed! Result: %#02x", calibrationResult);
-	// 	}
-	// }
 
-	// if (boardData.canID == 0x000) // If the can ID is not set, then we'll look for a new, free ID.
-	// {
-	// 	uint8_t foundID = FDCAN_FindUniqueID();
-	// 	if (foundID != 0)
-	// 	{
-	// 		boardData.canID = foundID;
-	// 		updateData = 1;
-	// 		SIMPLEFOC_DEBUG("Unique CAN ID found: %i", foundID);
-	// 	} else {
-	// 		digitalWrite(LED_FAULT, HIGH);
-	// 		SIMPLEFOC_DEBUG("Failed to find a unique CAN ID!");
-	// 	}
-	// }
+	time_prev=micros();
 
-	// if(updateData) // If the configuration data has changed at all, update the flash.
-	// {
-	// 	EEPROM.put(0, boardData);
-	// }
+	sine_test.linkMotor(&motor);
+	sine_test.linkSerial(&SERIALPORT);
+	
+	prbs_test.linkMotor(&motor);
+	prbs_test.linkSerial(&SERIALPORT);
+	
+	// commander.scalar(&test.max_frequency, (char*)'x');
+	// commander.scalar(&test.min_frequency, (char*)'n');
+	// commander.scalar(&test.amplitude, (char*)'a');
+	// commander.scalar(&test.steps, (char*)'s');
+	// commander.scalar(&test.cycles_per_step, (char*)'c');
+
+	commander.add('X', &sineExecute);
+	commander.add('P', &prbsExecute);
+	commander.add('E', &calibrateEncoder);
+
+	SERIALPORT.println("BMP Over TCP!!!");
+
+
 }
+
 
 void loop()
 {
-	motor.loopFOC();
+
+	step_dir.cleanLowVelocity();  
 	motor.move();
+	motor.loopFOC();
 	commander.run();
 
-	if(counter == 0xFFF){
+
+	if(counter == 0xFFFF){
 		digitalToggle(LED_GOOD);
 		counter = 0;
 	}
@@ -200,7 +220,7 @@ uint8_t configureFOC(void)
 		digitalWrite(LED_FAULT, HIGH);
 
 	sensor.init();
-
+	// sensor.setHysteresis(7);
 	// Check if the encoder has loaded the right PPR, if not, update and then write to EEPROM.
 	if (sensor.getABZResolution() != ENC_PPR)
 	{
@@ -223,30 +243,31 @@ uint8_t configureFOC(void)
 	}
 
 	// Driver initialization.
-	driver.pwm_frequency = 32000;
-	driver.voltage_power_supply = 12;
-	driver.voltage_limit = driver.voltage_power_supply / 2;
+	driver.pwm_frequency = 35000;
+	driver.voltage_power_supply = 12.0f;
+	driver.voltage_limit = driver.voltage_power_supply/2.0f;
 	driver.init();
 
 	// Motor PID parameters.
-    motor.PID_velocity.P = 0.035;
-    motor.PID_velocity.I = 0.01;
-    motor.PID_velocity.D = 0.000;
-    motor.LPF_velocity.Tf = 0.004;
-	motor.PID_velocity.output_ramp = 750;
-	motor.PID_velocity.limit = 500;
+    motor.PID_velocity.P = 0.075f;
+    motor.PID_velocity.I = 4.0f;
+    motor.PID_velocity.D = 0.00f;
+    motor.LPF_velocity.Tf = 0.0015f;
+	motor.PID_velocity.output_ramp = 0.0f;
+	motor.PID_velocity.limit = 500.0f;
 
-	motor.P_angle.P = 350;
-    motor.P_angle.I = 8;
-    motor.P_angle.D = 0.3;
-    motor.LPF_angle = 0.001;
-	motor.LPF_angle.Tf = 0; // try to avoid
+	motor.P_angle.P = 400.0f;
+    motor.P_angle.I = 5.0f;
+    motor.P_angle.D = 1.0f;
+	motor.LPF_angle.Tf = 0.00f; // try to avoid
+
+	motor.motion_downsample = 20;
 
 	// Motor initialization.
-	// motor.voltage_sensor_align = 2;
-	motor.current_limit = 1;
+	motor.voltage_sensor_align = 2.0f;
+	motor.current_limit = 2.0f;
 	motor.velocity_limit = 500;
-	motor.controller = MotionControlType::velocity;
+	motor.controller = MotionControlType::angle;
 	motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
 
 // Monitor initialization
@@ -265,14 +286,21 @@ uint8_t configureFOC(void)
 	// SERIALPORT.printf("Current Sense init result: %i\n", ret);
 	// motor.linkCurrentSense(&currentsense);
 
-	motor.target = 10;
 
-	motor.zero_electric_angle = NOT_SET;
-	motor.sensor_direction = Direction::UNKNOWN;
+
+	// motor.zero_electric_angle = 0.24; // small motor
+	motor.zero_electric_angle = 0.625; // big motor
+	motor.sensor_direction = Direction::CCW;
 
 	motor.init();
 	motor.initFOC();
 
+
+	// calibrateEncoder();
+	sensor.update();
+	float start_angle = motor.shaftAngle();
+	SERIALPORT.printf("Setting target to: %.2f\n", start_angle);
+	motor.target = start_angle;
 	// if(boardData.signature != magicWord){
 	// 	// If we have not initialized the EEPROM before.
 	// 	motor.init();
@@ -299,32 +327,51 @@ uint8_t configureCAN(void)
 	return 1;
 }
 
-uint8_t calibrateEncoder(void)
+void calibrateEncoder(char* c)
 {
-	motor.target = 35; // roughly 2000rpm -> need to write 0x1 to Reg. AUTOCAL_FREQ
+	MotionControlType orig_controller = motor.controller;
+	motor.controller = MotionControlType::velocity_openloop;
+	motor.enable();
 
+	motor.target = 7; // roughly 150rpm -> need to write 0x5 to Reg. AUTOCAL_FREQ
+	int revs = 64;
 	MT6835Options4 currentSettings = sensor.getOptions4();
-	currentSettings.autocal_freq = 0x1;
+	currentSettings.autocal_freq = 0x6;
 	sensor.setOptions4(currentSettings);
 
 	uint32_t calTime = micros();
-	while ((micros() - calTime) < 2000000)
+	while ((micros() - calTime) < ((revs/(motor.target/_2PI) + 1.2)*1e6))
 	{
 		motor.loopFOC();
 		motor.move();
 
-		if ((micros() -calTime) > 2000)
+		if ((micros() -calTime) > 200000)
 		{
 			// after motor is spinning at constant speed, enable calibration.
 			digitalWrite(LED_GOOD, HIGH);
 			digitalWrite(CAL_EN, HIGH);
 		}
 	}
-
+	motor.target = 0;
 	digitalWrite(LED_GOOD, LOW);
 	digitalWrite(CAL_EN, LOW);
+	motor.controller = orig_controller;
 
-	return sensor.getCalibrationStatus();
+	digitalWrite(LED_GOOD, HIGH);
+	digitalWrite(LED_FAULT, LOW);
+
+	for (uint8_t i = 0; i < 60; i++)
+	{ // Datasheet says we need to wait 6 seconds after writing EEPROM.
+		digitalToggle(LED_GOOD);
+		digitalToggle(LED_FAULT);
+		delay(100);
+	}
+
+	digitalWrite(LED_GOOD, LOW);
+	digitalWrite(LED_FAULT, LOW);
+
+	// return sensor.getCalibrationStatus();
+	return;
 }
 
 void userButton(void)
@@ -334,3 +381,4 @@ void userButton(void)
 	else
 		digitalToggle(LED_FAULT);
 }
+
