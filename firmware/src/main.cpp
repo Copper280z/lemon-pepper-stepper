@@ -49,9 +49,9 @@ extern volatile uint8_t RxData[8];
 #define MOTORKV 40
 #define ENC_PPR 16383 // max 16383 (zero index) -> *4 for CPR, -1 is done in init to prevent rollover on 16 bit timer
 
-#define SERIALPORT Serial3
+#define SERIALPORT SerialUSB
 
-HardwareSerial Serial3 = HardwareSerial(PB8, PB9);
+// HardwareSerial Serial3 = HardwareSerial(PB8, PB9);
 
 /**
  * SPI clockdiv of 16 gives ~10.5MHz clock. May still be stable with lower divisor.
@@ -68,6 +68,7 @@ STM32HWEncoder enc = STM32HWEncoder(ENC_PPR, ENC_A, ENC_B, ENC_Z);
  */
 // InlineCurrentSenseSync currentsense = InlineCurrentSenseSync(90, ISENSE_U, ISENSE_V, ISENSE_W);
 
+
 StepperDriver4PWM driver = StepperDriver4PWM(PA0, PA9, PA1, PA10, PB12);
 StepperMotor motor = StepperMotor(POLEPAIRS, RPHASE, MOTORKV, 0.0035);
 StepDirListener step_dir = StepDirListener( PC11, PA8, _2PI/(200.0*16) );
@@ -82,8 +83,7 @@ PRBS prbs_test = PRBS();
 Commander commander = Commander(SERIALPORT);
 
 uint16_t counter = 0;
-extern volatile uint16_t adc1Result[3];
-extern volatile uint16_t adc2Result[2];
+float stepCounter;
 
 DQCurrent_s foc_currents;
 float electrical_angle;
@@ -94,6 +94,7 @@ uint8_t configureFOC(void);
 uint8_t configureCAN(void);
 void calibrateEncoder(char *c);
 void userButton(void);
+void onStep(void) {step_dir.handle();}
 
 void sineExecute(char* c) {
 	sine_test.Execute();
@@ -115,6 +116,7 @@ void setup()
 
 	// attachInterrupt(USER_BUTTON, userButton, RISING);
 
+
 	SERIALPORT.begin(2000000);
 
 	EEPROM.get(0, boardData);
@@ -128,6 +130,7 @@ void setup()
 	// 	SIMPLEFOC_DEBUG("CAN init failed.");
 	// 	digitalWrite(LED_FAULT, HIGH);
 	// }
+
 
 	step_dir.init();
 	step_dir.enableInterrupt(onStep);
@@ -183,7 +186,9 @@ void loop()
 		digitalToggle(LED_GOOD);
 		counter = 0;
 	}
-counter++;
+
+	counter++;
+
 #ifdef HAS_MONITOR
 	motor.monitor();
 #endif
@@ -205,6 +210,11 @@ uint8_t configureFOC(void)
 
 	// Encoder initialization.
 	// Ideally configuring the sensor over SPI then use STM32HWEncoder
+
+	step_dir.init();
+	step_dir.enableInterrupt(onStep);
+	step_dir.attach(&stepCounter);
+
 	enc.init();
 	if (!enc.initialized)
 		digitalWrite(LED_FAULT, HIGH);
@@ -368,4 +378,7 @@ void userButton(void)
 {
 	if(USB->DADDR != 0)
 		jump_to_bootloader();
+	else
+		digitalToggle(LED_FAULT);
 }
+
