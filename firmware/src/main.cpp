@@ -101,7 +101,7 @@ void sineExecute(char* c) {
 }
 
 void prbsExecute(char* c) {
-	prbs_test.Execute();
+	prbs_test.Execute_args(c);
 }
 
 void setup()
@@ -261,7 +261,7 @@ uint8_t configureFOC(void)
     motor.P_angle.D = 1.0f;
 	motor.LPF_angle.Tf = 0.00f; // try to avoid
 
-	motor.motion_downsample = 20;
+	motor.motion_downsample = 1;
 
 	// Motor initialization.
 	motor.voltage_sensor_align = 2.0f;
